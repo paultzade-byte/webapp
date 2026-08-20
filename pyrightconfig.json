@@ -1,0 +1,5 @@
+{
+  "reportMissingModuleSource": "none",
+  "venvPath": ".",
+  "venv": ".venv"
+}

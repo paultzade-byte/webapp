@@ -1,0 +1,138 @@
+body {
+    background-color: #F5F5DC;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    display: flex;
+    justify-content: center;
+    margin-top: 40px;
+}
+
+h1 {
+    font-size: 2em;
+    color: #322200;
+    text-align: center;
+}
+
+img {
+    width: 100%;
+    max-width: 300px;
+    height: auto;
+    display: block;
+    margin: 0 auto 20px;
+    border-radius: 5px;
+}
+
+label {
+    font-size: 17px;
+    color: #322200;
+    margin-bottom: 10px;
+    display: block;
+    text-align: center;
+    font-weight: bold;
+}
+
+.input-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+input[type="text"] {
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    max-width: 200px;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+input[type="text"]:focus {
+    outline: none;
+    border-color: #166;
+    box-shadow: 0 0 0 2px rgba(17, 102, 102, 0.2);
+}
+
+::placeholder {
+    color: #aaa;
+    font-size: 13px;
+}
+
+button {
+    background-color: #166;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 10px 20px;
+    font-size: 15px;
+    text-align: center;
+    transform: background-color 0.2s ease, transform 0.1s ease;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #0d4d4d;
+}
+
+button:active {
+    transform: scale(0.97);
+}
+
+.clicker-wrap {
+    text-align: center;
+    margin-top: 10px;
+}
+
+.invitation-text {
+    padding: 20px 40px;
+    box-sizing: border-box;
+}
+
+.underline-text {
+    text-decoration: underline;
+}
+
+#count {
+    font-size: 3em;
+    color: #322200;
+    font-style: italic;
+    text-align: center;
+    display: flex;
+}
+
+#counter {
+    display: flex;
+    text-align: center;
+    justify-content: center;
+    flex-direction: column;
+}
+
+
+#not-escaped-button-container {
+    min-height: 50px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000
+}
+
+.modal-box {
+    background-color: #fff;
+    padding: 24px 32px;
+    border-radius: 8px;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+    max-width: 300px;
+    text-align: center;
+    width: 100%;
+}

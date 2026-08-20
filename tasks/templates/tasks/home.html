@@ -1,0 +1,58 @@
+{% load static %}
+<!DOCTYPE  html>
+<html>
+<head>
+    <title>Hello mi site</title>
+    <link rel="stylesheet" href="{% static 'tasks/css/style.css' %}">
+</head>
+
+<body>
+    <div style="max-width: 400px; width: 100%">
+        <form method="post" id="name-form">
+            {% csrf_token %}
+            <div id="not-hovered-zone">
+                <h1>Halo Djangogo!</h1>
+                <img src="{% static 'tasks/images/detu.jpg' %}">
+                <label for="save_placeholder">Here is your antianger clicker</label>
+                <div class="invitation-text">
+                    <p style="text-align: center;">Input your name and click the button "Save" to save your name in the <span class="underline-text">eternity</span>...<br>
+                        then feel absolutely free to click the button "Click me" to start the clicker<br>
+                        and try to peacefully reach the counter to 100 to reduce your anger level
+                    </p>
+                </div>
+                <div class="input-row">
+                    <input type="text" id="save_placeholder" name="user_name" placeholder="my name is..." value="{{ saved_name }}" {% if name_saved %}disabled{% endif %}>
+                    <button type="submit" id="save_button" {% if name_saved %}disabled{% endif %}>{% if name_saved %}Saved!{% else %}Save{% endif %}</button>
+                </div>
+                <p id="player-name-display">{% if name_saved %}Player: {{ saved_name }}{% endif %}</p>
+                <div class="clicker-container">
+                    <div id="not-escaped-button-container">
+                        <div class="clicker-wrap">
+                            <button type="button" id="clicker_button">Click me</button>
+                        </div>
+                    </div>
+                    <div id="counter">
+                        <p id="count">{{ counter }}</p>
+                    </div>
+                </div>
+                <button type="blutton" id="new-game-button">NEW GAME</button>
+            </div>
+        </form>
+    </div>
+    <div id="modal-overlay" class="modal-overlay" style="display: none;">
+        <div class="modal-box">
+            <p id="modal-text"></p>
+            <button id="modal-close">OK</button>
+        </div>
+    </div>
+    <script>
+        window.INITIAL_STATE = {
+            isStarter: {{ is_starter|yesno:"true,false"}},
+            nameSaved: {{ name_saved|yesno:"true,false"}},
+            gameStarted: {{ game_started|yesno:"true,false"}}
+        };
+    </script>
+    <script src="{% static 'tasks/js/clicker.js' %}"></script>
+    <script src="{% static 'tasks/js/counter.js' %}"></script>
+</body>
+</html>
