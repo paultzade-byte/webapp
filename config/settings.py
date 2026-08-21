@@ -134,3 +134,5 @@ CHANNEL_LAYERS = {
 }
 
 ASGI_APPLICATION = 'config.asgi.application'
+
+SESSION_COOKIE_AGE = 60 * 3  # 3 хв

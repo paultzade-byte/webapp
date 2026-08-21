@@ -48,6 +48,7 @@ nameForm.addEventListener('submit', async (e) => {
     const response = await fetch('/save-name/', {
         method: 'POST',
         body: formData,
+        credentials: 'same-origin',
         headers: { 'X-CSRFToken': getCookie('csrftoken') },
     });
     const data = await response.json();

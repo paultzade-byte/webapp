@@ -11,6 +11,7 @@ clickBtn.addEventListener('click', async () => {
         return;
     }
     if (!window.currentUserName) {
+        newGameButton.disabled = true;
         showModal("Спочатку збережи ім'я");
         return;
     }
@@ -24,6 +25,7 @@ clickBtn.addEventListener('click', async () => {
 
     const response = await fetch('/click/', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'X-CSRFToken': getCookie('csrftoken') },
     });
     const data = await response.json();
@@ -44,6 +46,7 @@ clickBtn.addEventListener('click', async () => {
 newGameButton.addEventListener('click', async () => {
     const response = await fetch('/new-game/', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'X-CSRFToken': getCookie('csrftoken') },
     });
     const data = await response.json();

@@ -1,11 +1,20 @@
 from django.shortcuts import render
 from tasks.models import GameState, Player
 from django.http import JsonResponse
+from django.contrib.sessions.models import Session
 from django.utils import timezone
 from datetime import timedelta
 
 STARTER_TIMEOUT_MINUTES = 5
 WIN_THRESHOLD = 20
+
+def is_session_alive(session_key):
+    if not session_key:
+        return False
+    return Session.objects.filter(
+        session_key=session_key,
+        expire_date__gte=timezone.now(),
+    ).exists()
 
 def get_game_state():
     state, _ = GameState.objects.get_or_create(pk=1)
@@ -94,10 +103,13 @@ def new_game(request):
         return JsonResponse({"error": "nethod not allowed"}, status=405)
 
     state = get_game_state()
+    print(f"[DEBUG] cookies: {request.COOKIES}")
     is_stale = timezone.now() - state.last_click_at > timedelta(minutes=STARTER_TIMEOUT_MINUTES)
     print(f"[DEBUG] my session: {request.session.session_key}, starter: {state.starter_session_key}, is_won: {state.is_won}, is_stale: {is_stale}")
 
-    if not state.is_won and not is_stale and state.starter_session_key != request.session.session_key:
+    starter_is_alive = is_session_alive(state.starter_session_key)
+
+    if not state.is_won and not is_stale and starter_is_alive and state.starter_session_key != request.session.session_key:
         return JsonResponse({"error": "Only firestarter could start new game while it lasts"}, status=403)
 
     state.counter_value = 0
