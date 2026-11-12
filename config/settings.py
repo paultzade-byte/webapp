@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -20,12 +21,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-c+jdt$^c!f@wfji^_pv_8(^^sm=jud^j*#qm53=^)7b@9790vg'
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-c+jdt$^c!f@wfji^_pv_8(^^sm=jud^j*#qm53=^)7b@9790vg',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', '1') == '1'
 
-ALLOWED_HOSTS = ['192.168.1.77', '127.0.0.1', 'localhost']
+ALLOWED_HOSTS = os.environ.get(
+    'DJANGO_ALLOWED_HOSTS', '192.168.1.77,127.0.0.1,localhost'
+).split(',')
 
 
 # Application definition
@@ -79,6 +85,12 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            # IMMEDIATE grabs the write lock at BEGIN, so concurrent clicks
+            # queue up instead of failing with "database is locked".
+            'transaction_mode': 'IMMEDIATE',
+            'timeout': 20,
+        },
     }
 }
 
@@ -124,15 +136,26 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            'hosts': [('127.0.0.1', 6379)]
+# Redis is optional: set REDIS_URL (e.g. redis://127.0.0.1:6379) to use it.
+# Without it the in-memory layer works fine for a single `runserver`/daphne process.
+REDIS_URL = os.environ.get('REDIS_URL')
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {'hosts': [REDIS_URL]},
         }
     }
-}
+else:
+    CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
 
 ASGI_APPLICATION = 'config.asgi.application'
 
-SESSION_COOKIE_AGE = 60 * 3  # 3 хв
+# ---- Game knobs: крути як хочеш ----
+GAME = {
+    'TARGET': int(os.environ.get('GAME_TARGET', 100)),  # clicks to win
+    'STALE_MINUTES': 5,      # nobody clicked this long -> anyone may restart
+    'ONLINE_SECONDS': 30,    # no ping this long -> player counts as offline
+    'MIN_CLICK_INTERVAL_MS': 50,  # per-connection anti-autoclicker throttle
+    'HALL_OF_FAME_SIZE': 5,
+}
