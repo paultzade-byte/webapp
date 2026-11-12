@@ -1,7 +1,7 @@
-from django.urls import re_path
+from django.urls import path
 
-from . import consumer
+from tasks.consumers import GameConsumer
 
 websocket_urlpatterns = [
-    re_path(r"ws/game/$", consumer.GameConsumer.as_asgi()) # pyright: ignore
+    path("ws/game/", GameConsumer.as_asgi()),  # pyright: ignore
 ]
