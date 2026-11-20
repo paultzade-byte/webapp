@@ -153,9 +153,18 @@ ASGI_APPLICATION = 'config.asgi.application'
 
 # ---- Game knobs: крути як хочеш ----
 GAME = {
-    'TARGET': int(os.environ.get('GAME_TARGET', 100)),  # clicks to win
-    'STALE_MINUTES': 5,      # nobody clicked this long -> anyone may restart
-    'ONLINE_SECONDS': 30,    # no ping this long -> player counts as offline
-    'MIN_CLICK_INTERVAL_MS': 50,  # per-connection anti-autoclicker throttle
+    'BUDGET': 20,             # clicks each player gets per game
+    'DEPOSIT': 10,            # the first N of them are the deposit (can't win)
+    'TARGET_MAX': int(os.environ.get('GAME_TARGET_MAX', 15)),  # winning click hides in battle clicks 1..N
+    'IDLE_SECONDS': 5,        # no click this long -> -1 click (burned if you're in battle)
+    'TRAP_CHANCE': 0.25,      # chance of a trap on every deposit click
+    'LOCK_SECONDS': 2,        # how long the "lock" trap disables the button
+    'CARD_AT': (5, 15),       # personal click counts that earn a card
+    'BATTERY': 3,             # battery card: +N clicks
+    'SABOTAGE': 2,            # sabotage card: -N clicks to the target
+    'TICK_SECONDS': 1,        # how often the server checks for idle players (0 = never)
+    'STALE_MINUTES': 5,       # nobody clicked this long -> anyone may restart
+    'ONLINE_SECONDS': 30,     # no ping this long -> player counts as offline
+    'MIN_CLICK_INTERVAL_MS': 50,  # per-player anti-autoclicker throttle
     'HALL_OF_FAME_SIZE': 5,
 }

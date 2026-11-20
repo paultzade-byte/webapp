@@ -15,11 +15,16 @@
         <section class="card main-card" id="safe-zone">
             <h1>Halo Djangogo!</h1>
             <img src="{% static 'tasks/images/detu.jpg' %}" alt="detu">
-            <p class="lead">
-                Збережи ім'я у <u>вічності</u>, лови кнопку і разом з усіма
-                докликай до <b id="target">100</b>, щоб знизити рівень злості.
-                Хто зробить останній клік — той і переміг.
-            </p>
+
+            <details class="rules">
+                <summary>Як грати</summary>
+                <ol>
+                    <li>У тебе <b data-rule="budget">20</b> кліків. Перші <b data-rule="deposit">10</b> — депозит: він не рухає лічильник, і по дорозі кнопка підставляє підніжки.</li>
+                    <li>Після депозиту ти в бою: кожен клік рухає спільний лічильник. Сервер сховав один <b>виграшний клік</b> — хто на нього влучить, той переміг.</li>
+                    <li>Не клікаєш <b data-rule="idle_seconds">5</b> с — мінус клік. У бою він <b>згорає</b>: лічильник рухається, а виграти ти не можеш. Проспиш виграшний — його перезагадають.</li>
+                    <li>За 5-й і 15-й клік отримуєш карту: 🔋 батарейка, 🗡 саботаж, 🔄 обмін або 🛡 щит.</li>
+                </ol>
+            </details>
 
             <form id="join-form" class="input-row" autocomplete="off">
                 <input type="text" id="name" maxlength="32" placeholder="my name is...">
@@ -27,8 +32,18 @@
             </form>
             <p id="me" class="me"></p>
 
+            <div id="wallet" class="wallet" hidden>
+                <span id="wallet-budget"></span>
+                <span id="wallet-phase"></span>
+                <span id="wallet-shield" hidden>🛡 щит</span>
+            </div>
+            <div id="idle" class="idle" hidden><div id="idle-fill" class="idle__fill"></div></div>
+
             <div class="anger">
-                <div class="anger__label">Рівень злості: <span id="anger-pct">100%</span> <span id="anger-emoji">🤬</span></div>
+                <div class="anger__label">
+                    🎯 Виграшний клік захований між <b id="win-from">1</b> і <b id="win-to">15</b>
+                    <span id="anger-emoji">🤬</span>
+                </div>
                 <div class="anger__bar"><div id="anger-fill" class="anger__fill"></div></div>
             </div>
 
@@ -37,7 +52,19 @@
                     <button type="button" id="clicker" class="big-btn" disabled>Click me</button>
                 </div>
                 <div id="count" class="count">0</div>
+                <div class="count-label">бойових кліків</div>
                 <div id="combo" class="combo"></div>
+            </div>
+
+            <div id="hand" class="hand" hidden>
+                <div class="hand__card">
+                    <span id="hand-icon" class="hand__icon"></span>
+                    <div>
+                        <b id="hand-name"></b>
+                        <div id="hand-desc" class="hand__desc"></div>
+                    </div>
+                </div>
+                <button type="button" id="play-card">Зіграти</button>
             </div>
 
             <button type="button" id="new-game" class="ghost-btn">НОВА ГРА</button>
@@ -46,6 +73,7 @@
         <aside class="side">
             <section class="card">
                 <h2>Гравці <small id="online"></small></h2>
+                <p id="target-hint" class="target-hint" hidden>👆 Обери ціль (Esc — скасувати)</p>
                 <ol id="players" class="players"></ol>
             </section>
             <section class="card">
@@ -61,6 +89,16 @@
         <div class="modal__box">
             <p id="modal-text"></p>
             <button type="button" id="modal-ok">OK</button>
+        </div>
+    </div>
+
+    <!-- the "something went wrong" trap -->
+    <div id="crash" class="crash" hidden>
+        <div class="crash__box">
+            <div class="crash__icon">💥</div>
+            <h2>Щось пішло не так</h2>
+            <pre id="crash-code"></pre>
+            <p>Натисни будь-що, щоб продовжити. Таймер простою, до речі, тікає 😈</p>
         </div>
     </div>
 

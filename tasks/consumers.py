@@ -4,40 +4,93 @@ WebSocket protocol (JSON both ways).
 client -> server
     {"type": "join", "name": "Petro"}
     {"type": "click"}
+    {"type": "play_card", "target": "<player id>"}   # target only for sabotage / swap
     {"type": "new_game"}
     {"type": "ping"}
 
 server -> client
-    {"type": "state", "state": {...}, "event": {...} | null}   # broadcast to everyone
-    {"type": "you", "player_id": "uuid" | null, "name": "..."}  # only to you
-    {"type": "error", "message": "..."}                         # only to you
+    {"type": "state", "state": {...}, "events": [...]}   # broadcast to everyone
+    {"type": "you", "player_id": ..., "card": ..., ...}  # your private state, only to you
+    {"type": "notice", "kind": "trap" | "card" | ...}    # something happened to you, only to you
+    {"type": "error", "message": "..."}                  # only to you
 """
 
-import time
+import asyncio
+import logging
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from channels.layers import get_channel_layer
 from django.conf import settings
 
 from . import game
 
 GROUP = "game"
+log = logging.getLogger(__name__)
+
+
+async def publish(result: game.Result) -> None:
+    """Send fresh state + what just happened to every connected client."""
+    if not (result.events or result.affected):
+        return
+    layer = get_channel_layer()
+    assert layer is not None
+    await layer.group_send(
+        GROUP,
+        {
+            "type": "game.state",
+            "state": await database_sync_to_async(game.snapshot)(),
+            "events": result.events,
+            "affected": sorted(result.affected),
+        },
+    )
+
+
+# ------------------------------------------------------------ idle ticker
+# One loop per server process. It only lives while somebody is connected.
+# game.tick() is idempotent, so even several processes ticking at once is fine.
+
+_connections = 0
+_ticker: asyncio.Task | None = None
+
+
+async def _tick_forever():
+    while _connections > 0:
+        await asyncio.sleep(settings.GAME["TICK_SECONDS"])
+        try:
+            await publish(await database_sync_to_async(game.tick)())
+        except Exception:
+            log.exception("idle tick failed")
+
+
+def _ensure_ticker():
+    global _ticker
+    if settings.GAME["TICK_SECONDS"] and (_ticker is None or _ticker.done()):
+        _ticker = asyncio.get_running_loop().create_task(_tick_forever())
 
 
 class GameConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
+        global _connections
         self.session = self.scope["session"]
-        self.last_click = 0.0
+        self.player_id = None
+        self.counted = False
         await self.accept()
         if not self.session.session_key:
             await self.error("Немає сесії — онови сторінку")
             await self.close()
             return
+        _connections += 1
+        self.counted = True
         await self.channel_layer.group_add(GROUP, self.channel_name)
+        _ensure_ticker()
         await self.send_you()
-        await self.send_json({"type": "state", "state": await self.snapshot(), "event": None})
+        await self.send_json({"type": "state", "state": await self.snapshot(), "events": []})
 
     async def disconnect(self, code):
+        global _connections
+        if self.counted:
+            _connections -= 1
         await self.channel_layer.group_discard(GROUP, self.channel_name)
 
     # ------------------------------------------------------------ incoming
@@ -59,49 +112,49 @@ class GameConsumer(AsyncJsonWebsocketConsumer):
     async def on_join(self, content):
         player = await self.join_and_remember(str(content.get("name", "")))
         await self.send_you()
-        await self.broadcast({"kind": "join", "name": player.name})
+        await publish(game.Result(events=[{"kind": "join", "name": player.name}]))
 
     async def on_click(self, content):
-        now = time.monotonic()
-        if (now - self.last_click) * 1000 < settings.GAME["MIN_CLICK_INTERVAL_MS"]:
-            return  # too fast, silently ignore — autoclickers go home
-        self.last_click = now
-        result = await database_sync_to_async(game.click)(self.key)
-        event = {"kind": "click", "name": result.player.name, "player_id": str(result.player.public_id)}
-        if result.won:
-            event = {"kind": "win", "name": result.player.name}
-        await self.broadcast(event)
+        await self.deliver(await database_sync_to_async(game.click)(self.key))
+
+    async def on_play_card(self, content):
+        target = content.get("target")
+        await self.deliver(await database_sync_to_async(game.play_card)(self.key, target))
 
     async def on_new_game(self, content):
         await database_sync_to_async(game.new_game)(self.key)
-        await self.broadcast({"kind": "new_game"})
+        await publish(game.Result(events=[{"kind": "new_game"}]))
 
     # ------------------------------------------------------------ outgoing
 
-    async def broadcast(self, event):
-        await self.channel_layer.group_send(
-            GROUP, {"type": "game.state", "state": await self.snapshot(), "event": event}
-        )
+    async def deliver(self, result: game.Result):
+        for notice in result.notices:
+            await self.send_json({"type": "notice", **notice})
+        if result.notices:
+            await self.send_you()  # a card or a lock just changed
+        await publish(result)
 
     async def game_state(self, message):
         """Handler for group messages with type 'game.state'."""
-        if message["event"] and message["event"]["kind"] == "new_game":
-            await self.send_you()  # nobody is joined in a fresh game
-        await self.send_json({"type": "state", "state": message["state"], "event": message["event"]})
+        await self.send_json({"type": "state", "state": message["state"], "events": message["events"]})
+        new_game = any(e["kind"] == "new_game" for e in message["events"])
+        if new_game or (self.player_id and self.player_id in message["affected"]):
+            await self.send_you()
 
     async def send_you(self):
-        await self.send_json({"type": "you", **await self.who_am_i()})
+        data = await self.who_am_i()
+        self.player_id = data["player_id"]
+        await self.send_json({"type": "you", **data})
 
     async def error(self, message):
         await self.send_json({"type": "error", "message": message})
 
     # ------------------------------------------------------------ helpers
+    # The session loads lazily from the DB, so every touch of it has to be sync.
 
     @property
     def key(self):
         return self.session.session_key
-
-    # The session loads lazily from the DB, so every touch of it has to be sync.
 
     @database_sync_to_async
     def snapshot(self):
@@ -109,11 +162,7 @@ class GameConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def who_am_i(self):
-        player = game.find_player(self.key)
-        return {
-            "player_id": str(player.public_id) if player else None,
-            "name": player.name if player else self.session.get("name", ""),  # prefill the input
-        }
+        return game.private_state(self.key, self.session.get("name", ""))
 
     @database_sync_to_async
     def join_and_remember(self, name):

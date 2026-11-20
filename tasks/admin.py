@@ -11,11 +11,11 @@ class PlayerInline(admin.TabularInline):
 
 @admin.register(Game)
 class GameAdmin(admin.ModelAdmin):
-    list_display = ("id", "counter", "target", "winner", "created_at", "finished_at")
+    list_display = ("id", "counter", "secret", "winner", "created_at", "finished_at")
     inlines = [PlayerInline]
 
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
-    list_display = ("name", "game", "clicks", "last_seen")
+    list_display = ("name", "game", "budget", "deposited", "clicks", "card", "last_seen")
     list_filter = ("game",)

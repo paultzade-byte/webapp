@@ -4,10 +4,11 @@ from django.db import models
 
 
 class Game(models.Model):
-    """One round of the clicker. The newest row is always the current game."""
+    """One round. The newest row is always the current game."""
 
-    target = models.PositiveIntegerField(default=100)
-    counter = models.PositiveIntegerField(default=0)
+    counter = models.PositiveIntegerField(default=0)  # battle clicks only (deposits don't count)
+    secret = models.PositiveIntegerField(default=1)  # the winning counter value. NEVER send it to clients!
+    window_start = models.PositiveIntegerField(default=0)  # secret is in window_start+1 .. window_start+TARGET_MAX
     starter = models.ForeignKey(
         "Player", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
@@ -26,16 +27,32 @@ class Game(models.Model):
         return self.finished_at is not None
 
     def __str__(self):
-        return f"Game #{self.pk}: {self.counter}/{self.target}"
+        return f"Game #{self.pk}: {self.counter} (secret {self.secret})"
 
 
 class Player(models.Model):
+    class Card(models.TextChoices):
+        BATTERY = "battery", "🔋 Батарейка"
+        SABOTAGE = "sabotage", "🗡 Саботаж"
+        SWAP = "swap", "🔄 Обмін"
+        SHIELD = "shield", "🛡 Щит"
+
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="players")
     session_key = models.CharField(max_length=40)
     name = models.CharField(max_length=32)
     name_key = models.CharField(max_length=32)  # lowercased, for uniqueness
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-    clicks = models.PositiveIntegerField(default=0)
+
+    budget = models.PositiveSmallIntegerField(default=20)  # clicks left
+    deposited = models.PositiveSmallIntegerField(default=0)  # deposit progress
+    clicks = models.PositiveSmallIntegerField(default=0)  # battle clicks made
+    burned = models.PositiveSmallIntegerField(default=0)  # battle clicks lost to idling
+    card = models.CharField(max_length=16, choices=Card.choices, blank=True)
+    shielded = models.BooleanField(default=False)
+    disabled_until = models.DateTimeField(null=True, blank=True)  # "lock" trap
+
+    last_action_at = models.DateTimeField(null=True, blank=True)  # idle timer; None = never clicked
+    last_click_at = models.DateTimeField(null=True, blank=True)  # throttle
     joined_at = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(auto_now_add=True)
 
