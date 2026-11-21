@@ -9,6 +9,7 @@ class Game(models.Model):
     counter = models.PositiveIntegerField(default=0)  # battle clicks only (deposits don't count)
     secret = models.PositiveIntegerField(default=1)  # the winning counter value. NEVER send it to clients!
     window_start = models.PositiveIntegerField(default=0)  # secret is in window_start+1 .. window_start+TARGET_MAX
+    with_bot = models.BooleanField(default=False)  # the "гра з ботом" toggle; new games inherit it
     starter = models.ForeignKey(
         "Player", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
@@ -42,6 +43,7 @@ class Player(models.Model):
     name = models.CharField(max_length=32)
     name_key = models.CharField(max_length=32)  # lowercased, for uniqueness
     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    is_bot = models.BooleanField(default=False)
 
     budget = models.PositiveSmallIntegerField(default=20)  # clicks left
     deposited = models.PositiveSmallIntegerField(default=0)  # deposit progress

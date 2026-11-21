@@ -6,6 +6,7 @@ client -> server
     {"type": "click"}
     {"type": "play_card", "target": "<player id>"}   # target only for sabotage / swap
     {"type": "new_game"}
+    {"type": "set_bot", "enabled": true}
     {"type": "ping"}
 
 server -> client
@@ -23,7 +24,7 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.layers import get_channel_layer
 from django.conf import settings
 
-from . import game
+from . import bot, game
 
 GROUP = "game"
 log = logging.getLogger(__name__)
@@ -46,12 +47,14 @@ async def publish(result: game.Result) -> None:
     )
 
 
-# ------------------------------------------------------------ idle ticker
-# One loop per server process. It only lives while somebody is connected.
-# game.tick() is idempotent, so even several processes ticking at once is fine.
+# ------------------------------------------------------------ background loops
+# One idle ticker and one bot per server process, alive only while somebody is
+# connected. game.tick() is idempotent, so several processes ticking is fine.
+# Several processes would mean several bot "brains" sharing one bot player —
+# it would just click faster. Good enough for runserver / single daphne.
 
 _connections = 0
-_ticker: asyncio.Task | None = None
+_loops: list[asyncio.Task] = []
 
 
 async def _tick_forever():
@@ -63,10 +66,27 @@ async def _tick_forever():
             log.exception("idle tick failed")
 
 
-def _ensure_ticker():
-    global _ticker
-    if settings.GAME["TICK_SECONDS"] and (_ticker is None or _ticker.done()):
-        _ticker = asyncio.get_running_loop().create_task(_tick_forever())
+async def _bot_forever():
+    while _connections > 0:
+        result = None
+        try:
+            result = await database_sync_to_async(bot.step)()
+            if result is not None:
+                await publish(result)
+        except Exception:
+            log.exception("bot step failed")
+        # nothing to do -> check again in a second; playing -> human-ish jittery rhythm
+        delay = 1.0 if result is None else game.rng.uniform(0.6, 1.4) / settings.GAME["BOT_CPS"]
+        await asyncio.sleep(delay)
+
+
+def _ensure_loops():
+    """TICK_SECONDS = 0 switches both loops off (the tests drive time by hand)."""
+    global _loops
+    if not settings.GAME["TICK_SECONDS"] or (_loops and not all(t.done() for t in _loops)):
+        return
+    loop = asyncio.get_running_loop()
+    _loops = [loop.create_task(_tick_forever()), loop.create_task(_bot_forever())]
 
 
 class GameConsumer(AsyncJsonWebsocketConsumer):
@@ -83,7 +103,7 @@ class GameConsumer(AsyncJsonWebsocketConsumer):
         _connections += 1
         self.counted = True
         await self.channel_layer.group_add(GROUP, self.channel_name)
-        _ensure_ticker()
+        _ensure_loops()
         await self.send_you()
         await self.send_json({"type": "state", "state": await self.snapshot(), "events": []})
 
@@ -120,6 +140,10 @@ class GameConsumer(AsyncJsonWebsocketConsumer):
     async def on_play_card(self, content):
         target = content.get("target")
         await self.deliver(await database_sync_to_async(game.play_card)(self.key, target))
+
+    async def on_set_bot(self, content):
+        enabled = content.get("enabled") is True
+        await publish(await database_sync_to_async(game.set_bot)(self.key, enabled))
 
     async def on_new_game(self, content):
         await database_sync_to_async(game.new_game)(self.key)

@@ -65,7 +65,7 @@ button:active:not(:disabled) { transform: scale(.95); }
 button:disabled { opacity: .55; cursor: not-allowed; }
 
 .ghost-btn {
-    display: block; margin: 16px auto 0; background: transparent; color: var(--accent);
+    display: block; background: transparent; color: var(--accent);
     border: 2px solid var(--accent); font-weight: 600; letter-spacing: .05em;
 }
 .ghost-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
@@ -202,3 +202,21 @@ li.empty { color: var(--muted); font-style: italic; }
 .crash h2 { display: block; font-size: 1.8em; margin: 8px 0; }
 .crash pre { background: #000; color: #ff6b6b; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
 @keyframes crash-in { from { filter: invert(1); } }
+
+/* ---- bot toggle ---- */
+.controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: center; margin-top: 16px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch__track {
+    width: 42px; height: 24px; border-radius: 99px; background: #cfc7a8; position: relative;
+    transition: background .15s ease; flex: none;
+}
+.switch__thumb {
+    position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3); transition: transform .15s ease;
+}
+.switch input:checked + .switch__track { background: var(--accent); }
+.switch input:checked + .switch__track .switch__thumb { transform: translateX(18px); }
+.switch input:focus-visible + .switch__track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch:has(input:disabled) { opacity: .5; cursor: not-allowed; }
+.players li.is-bot { background: repeating-linear-gradient(-45deg, transparent 0 6px, rgba(17, 102, 102, .06) 6px 12px); }

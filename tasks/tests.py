@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from config.routing import websocket_urlpatterns
 
-from . import game
+from . import bot, game
 from .models import Game, Player
 
 # Small numbers so tests stay readable: 6 clicks each, 2 of them deposit.
@@ -19,7 +19,7 @@ RULES = {
     "BUDGET": 6, "DEPOSIT": 2, "TARGET_MAX": 3, "IDLE_SECONDS": 5,
     "TRAP_CHANCE": 0, "LOCK_SECONDS": 2, "CARD_AT": (3,), "BATTERY": 3, "SABOTAGE": 2,
     "TICK_SECONDS": 0, "STALE_MINUTES": 5, "ONLINE_SECONDS": 30,
-    "MIN_CLICK_INTERVAL_MS": 0, "HALL_OF_FAME_SIZE": 5,
+    "MIN_CLICK_INTERVAL_MS": 0, "HALL_OF_FAME_SIZE": 5, "BOT_CPS": 4,
 }
 SEC = timedelta(seconds=1)
 
@@ -285,6 +285,121 @@ class RestartTests(GameTestCase):
         self.clicks("b", 1)
         Player.objects.filter(name="A").update(last_seen=timezone.now() - timedelta(minutes=1))
         game.new_game("b")
+
+
+class BotToggleTests(GameTestCase):
+    def setUp(self):
+        super().setUp()
+        game.join("a", "A")
+        game.join("b", "B")
+
+    def bot(self):
+        return Player.objects.filter(game=game.current_game(), is_bot=True).first()
+
+    def test_starter_toggles_bot_on_and_off(self):
+        r = game.set_bot("a", True)
+        self.assertEqual(kinds(r), ["bot_on"])
+        snap = game.snapshot()
+        self.assertTrue(snap["with_bot"])
+        bots = [p for p in snap["players"] if p["bot"]]
+        self.assertEqual([p["name"] for p in bots], ["🤖 Бот"])
+        self.assertTrue(bots[0]["online"])
+        self.assertEqual(kinds(game.set_bot("a", False)), ["bot_off"])
+        self.assertIsNone(self.bot())
+
+    def test_toggling_twice_is_harmless(self):
+        game.set_bot("a", True)
+        self.assertEqual(game.set_bot("a", True).events, [])
+        self.assertEqual(Player.objects.filter(is_bot=True).count(), 1)
+
+    def test_only_starter_or_joined_players(self):
+        with self.assertRaises(game.GameError):
+            game.set_bot("b", True)  # not the starter, starter is online
+        with self.assertRaises(game.GameError):
+            game.set_bot("stranger", True)
+
+    def test_bot_never_becomes_starter_and_new_games_keep_it(self):
+        game.set_bot("a", True)
+        self.clicks("a", 1)
+        fresh = game.new_game("a")
+        self.assertTrue(fresh.with_bot)
+        self.assertIsNotNone(self.bot())
+        self.assertIsNone(fresh.starter)
+        game.join("b", "B")
+        self.assertEqual(game.current_game().starter.name, "B")
+
+    def test_bot_takes_another_name_if_its_name_is_taken(self):
+        game.join("c", "🤖 бот")
+        game.set_bot("a", True)
+        self.assertEqual(self.bot().name, "🤖 Бот 2")
+
+
+@override_settings(GAME={**RULES, "CARD_AT": ()})  # cards are handed out by the tests here
+class BotStrategyTests(GameTestCase):
+    def setUp(self):
+        super().setUp()
+        game.join("a", "A")
+        game.set_bot("a", True)
+        self.set_secret(100)
+
+    def bot_player(self):
+        return Player.objects.get(game=game.current_game(), is_bot=True)
+
+    def bot_steps(self, n, step=timedelta(milliseconds=300)):
+        results = []
+        for _ in range(n):
+            self.t += step
+            results.append(bot.step(now=self.t))
+        return results
+
+    def test_bot_waits_for_humans_to_start(self):
+        self.assertEqual(self.bot_steps(3), [None, None, None])
+        self.clicks("a", 1)
+        self.assertEqual(kinds(self.bot_steps(1)[0]), ["deposit"])
+
+    def test_bot_deposits_then_fights_and_never_idles(self):
+        self.clicks("a", 1)
+        results = self.bot_steps(4)
+        self.assertEqual([kinds(r) for r in results], [["deposit"], ["armed"], ["click"], ["click"]])
+        self.assertEqual(self.bot_player().burned, 0)
+
+    def test_bot_trap_is_public_and_slows_it_down(self):
+        self.clicks("a", 1)
+        with mock.patch.object(game, "roll_trap", return_value="modal"):
+            r = self.bot_steps(1)[0]
+        self.assertIn({"kind": "bot_trap", "trap": "modal", "name": "🤖 Бот"}, r.events)
+        self.assertIsNotNone(self.bot_player().disabled_until)
+        self.assertEqual(self.bot_steps(1, step=timedelta(milliseconds=100))[0].events, [])  # still confused
+
+    def test_bot_plays_battery_and_shield_at_once(self):
+        self.clicks("a", 1)
+        self.give_card(game.BOT_SESSION, "battery")
+        r = self.bot_steps(1)[0]
+        self.assertEqual(r.events[0]["card"], "battery")
+        self.give_card(game.BOT_SESSION, "shield")
+        self.bot_steps(1)
+        self.assertTrue(self.bot_player().shielded)
+
+    def test_bot_sabotages_the_biggest_threat(self):
+        game.join("b", "B")
+        self.clicks("a", 3)  # A: in battle, 3 clicks left
+        self.clicks("b", 1)  # B: deposit 1/2, 5 clicks -> 4 battle clicks left
+        self.give_card(game.BOT_SESSION, "sabotage")
+        r = self.bot_steps(1)[0]
+        self.assertEqual(r.events[0]["target"], "B")
+
+    def test_bot_swaps_only_when_it_pays_off(self):
+        self.clicks("a", 1)  # A has 5 clicks, the bot 6
+        self.give_card(game.BOT_SESSION, "swap")
+        for _ in range(5):
+            before = self.bot_player().budget
+            r = self.bot_steps(1)[0]
+            if "card" in kinds(r):
+                self.assertEqual(before, 3)  # first moment A (5) has more than bot + 1
+                self.assertEqual(r.events[0]["target"], "A")
+                self.assertEqual(self.bot_player().budget, 5)
+                return
+        self.fail("the bot never swapped")
 
 
 def make_session():

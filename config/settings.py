@@ -167,4 +167,5 @@ GAME = {
     'ONLINE_SECONDS': 30,     # no ping this long -> player counts as offline
     'MIN_CLICK_INTERVAL_MS': 50,  # per-player anti-autoclicker throttle
     'HALL_OF_FAME_SIZE': 5,
+    'BOT_CPS': 4,             # bot clicks per second (people manage ~6-8)
 }

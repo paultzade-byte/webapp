@@ -10,7 +10,7 @@
     winFrom: $('win-from'), winTo: $('win-to'), angerEmoji: $('anger-emoji'), angerFill: $('anger-fill'),
     clicker: $('clicker'), count: $('count'), combo: $('combo'),
     hand: $('hand'), handIcon: $('hand-icon'), handName: $('hand-name'), handDesc: $('hand-desc'), playCard: $('play-card'),
-    newGame: $('new-game'), players: $('players'), online: $('online'), targetHint: $('target-hint'),
+    newGame: $('new-game'), botToggle: $('bot-toggle'), botSwitch: $('bot-switch'), players: $('players'), online: $('online'), targetHint: $('target-hint'),
     hall: $('hall'), toasts: $('toasts'), safeZone: $('safe-zone'),
     modal: $('modal'), modalText: $('modal-text'), modalOk: $('modal-ok'),
     crash: $('crash'), crashCode: $('crash-code'),
@@ -21,6 +21,11 @@
     sabotage: { icon: '🗡', name: 'Саботаж', desc: (r) => `Гравець втрачає ${r.sabotage} кліки`, targeted: true },
     swap: { icon: '🔄', name: 'Обмін', desc: () => 'Поміняйся запасом кліків з гравцем', targeted: true },
     shield: { icon: '🛡', name: 'Щит', desc: () => 'Блокує наступний саботаж, обмін або штраф. Ніхто не знає, що він у тебе є' },
+  };
+  const BOT_TRAPS = {
+    slip: '🤖 У бота вислизнула кнопка 😂',
+    modal: '🤖 Бот побачив «щось пішло не так» і завис',
+    lock: '🤖 Боту заклинило кнопку',
   };
   const cardLabel = (kind) => `${CARDS[kind].icon} ${CARDS[kind].name}`;
 
@@ -77,6 +82,9 @@
     switch (ev.kind) {
       case 'join': return toast(`👋 ${ev.name} приєднався`);
       case 'new_game': return toast('🔄 Нова гра почалась!', 'good');
+      case 'bot_on': return toast(`🤖 ${ev.by} покликав бота. Він чекає на ваш перший клік`);
+      case 'bot_off': return toast(`🤖 ${ev.by} вигнав бота`);
+      case 'bot_trap': return toast(BOT_TRAPS[ev.trap]);
       case 'deposit': return mine(ev) ? floater('+1 💰') : null;
       case 'armed':
         if (mine(ev)) floater('⚔️');
@@ -184,6 +192,13 @@
     if (!card) targeting = false;
     el.targetHint.hidden = !targeting;
 
+    // bot toggle: always shows the server's truth, never the click that's still in flight
+    el.botToggle.checked = state.with_bot;
+    el.botToggle.disabled = !p || state.finished;
+    el.botSwitch.title = !p ? 'Спершу збережи ім\'я'
+      : state.finished ? 'Гра скінчилась — почни нову'
+      : state.starter_id === p.id ? '' : 'Перемикає 🔥 (або будь-хто, якщо 🔥 зник)';
+
     renderPlayers(r);
     el.hall.replaceChildren(...(state.hall_of_fame.length
       ? state.hall_of_fame.map((g) => row(g.name, `${g.seconds}s`))
@@ -198,7 +213,7 @@
       const isMe = p.id === you.player_id;
       const status = p.deposited >= r.deposit ? `⚔️${p.clicks}` : `💰${p.deposited}/${r.deposit}`;
       const name = `${p.id === state.starter_id ? '🔥 ' : ''}${p.name}${p.has_card ? ' 🃏' : ''}`;
-      const node = row(name, `${status} · 🔋${p.budget}`, [isMe && 'is-me', !p.online && 'is-off']);
+      const node = row(name, `${status} · 🔋${p.budget}`, [isMe && 'is-me', !p.online && 'is-off', p.bot && 'is-bot']);
       if (targeting && !isMe) {
         node.classList.add('targetable');
         node.addEventListener('click', () => {
@@ -228,6 +243,11 @@
   });
 
   el.newGame.addEventListener('click', () => send({ type: 'new_game' }));
+
+  el.botToggle.addEventListener('change', () => {
+    send({ type: 'set_bot', enabled: el.botToggle.checked });
+    el.botToggle.checked = state.with_bot; // flips for real when the server broadcasts it
+  }); 
 
   el.playCard.addEventListener('click', () => {
     if (!you.card) return;

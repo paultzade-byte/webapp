@@ -36,6 +36,8 @@ MAX_NAME_LENGTH = 32
 TRAPS = ("slip", "modal", "lock")
 CARDS = tuple(Player.Card.values)
 TARGETED = {Player.Card.SABOTAGE, Player.Card.SWAP}
+BOT_SESSION = "__bot__"  # real Django session keys are 32 random [a-z0-9], so no clash
+BOT_NAME = "🤖 Бот"
 
 rng = random.Random()  # tests can seed or patch this
 
@@ -134,6 +136,7 @@ def snapshot(game: Game | None = None) -> dict:
         "finished": game.is_finished,
         "winner": game.winner.name if game.winner else None,
         "starter_id": str(game.starter.public_id) if game.starter else None,
+        "with_bot": game.with_bot,
         "rules": {
             k.lower(): cfg(k)
             for k in ("BUDGET", "DEPOSIT", "TARGET_MAX", "IDLE_SECONDS", "BATTERY", "SABOTAGE")
@@ -147,7 +150,8 @@ def snapshot(game: Game | None = None) -> dict:
                 "clicks": p.clicks,
                 "burned": p.burned,
                 "has_card": bool(p.card),
-                "online": is_online(p),
+                "bot": p.is_bot,
+                "online": p.is_bot or is_online(p),
             }
             for p in players
         ],
@@ -433,6 +437,40 @@ def _find_target(game: Game, target_id: str | None) -> Player | None:
     return Player.objects.filter(game=game, public_id=public_id).first()
 
 
+# ---------------------------------------------------------------- the bot toggle
+# What the bot *does* lives in bot.py. Here are only the rules of having one.
+
+def _spawn_bot(game: Game) -> Player:
+    name, n = BOT_NAME, 1
+    while Player.objects.filter(game=game, name_key=name.lower()).exists():
+        n += 1
+        name = f"{BOT_NAME} {n}"  # somebody already called themselves "🤖 Бот", cute
+    return Player.objects.create(
+        game=game, session_key=BOT_SESSION, name=name, name_key=name.lower(),
+        budget=cfg("BUDGET"), is_bot=True,
+    )
+
+
+def set_bot(session_key: str, enabled: bool) -> Result:
+    """Same permission as a restart: the starter, or anyone if the starter is gone."""
+    res = Result()
+    with transaction.atomic():
+        game = _lock_current()
+        player = _get_acting_player(game, session_key)
+        if not can_restart(session_key, game):
+            raise GameError("Бота кличе тільки той, хто розпалив гру 🔥")
+        bot = Player.objects.filter(game=game, is_bot=True).first()
+        if enabled and bot is None:
+            _spawn_bot(game)
+            res.events.append({"kind": "bot_on", "by": player.name})
+        elif not enabled and bot is not None:
+            bot.delete()  # its clicks stay in the counter, like footprints
+            res.events.append({"kind": "bot_off", "by": player.name})
+        game.with_bot = enabled
+        game.save(update_fields=["with_bot"])
+    return res
+
+
 def can_restart(session_key: str | None, game: Game) -> bool:
     """While a game is running, only its starter may reset it —
     unless the starter vanished or nobody has clicked for a while."""
@@ -453,7 +491,10 @@ def new_game(session_key: str | None) -> Game:
         if not game.is_finished:
             game.finished_at = timezone.now()
             game.save(update_fields=["finished_at"])
-        return Game.objects.create(secret=roll_secret(0))
+        fresh = Game.objects.create(secret=roll_secret(0), with_bot=game.with_bot)
+        if fresh.with_bot:
+            _spawn_bot(fresh)
+        return fresh
 
 
 def touch(session_key: str | None) -> None:
