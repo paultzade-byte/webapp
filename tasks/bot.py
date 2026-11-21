@@ -77,7 +77,7 @@ def thought_about(bot: Player, what: str, now: datetime) -> bool:
 
 
 def battle_clicks_left(p: Player) -> int:
-    """How many lottery tickets a player can still buy."""
+    """How many battle clicks a player can still make (shots at the winning click and steps to the finish)."""
     if game.in_battle(p):
         return p.budget
     return max(0, p.budget - (game.cfg("DEPOSIT") - p.deposited))

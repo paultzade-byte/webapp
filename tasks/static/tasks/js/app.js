@@ -96,7 +96,7 @@
       case 'burn': bump(); return mine(ev) ? toast('🔥 Твій клік згорів за простій', 'bad') : null;
       case 'burn_win':
         bump(); shake();
-        return toast(mine(ev) ? '🔥🔥 Ти ПРОСПАВ виграшний клік! Його перезагадали' : `🔥 ${ev.name} проспав виграшний клік! Його перезагадали`, 'bad');
+        return toast(mine(ev) ? '🔥🔥 Ти ПРОСПАВ виграшний клік! Його сховали далі (якщо є куди)' : `🔥 ${ev.name} проспав виграшний клік! Його сховали далі (якщо є куди)`, 'bad');
       case 'shield':
         if (ev.against === 'idle') return mine(ev) ? toast('🛡 Щит врятував від штрафу за простій', 'good') : null;
         if (targetsMe(ev)) return toast(`🛡 Твій щит відбив ${cardLabel(ev.against)} від ${ev.name}!`, 'good');
@@ -108,10 +108,19 @@
         return toast(`🦹 ${ev.name} пограбував ${ev.target} на ${ev.amount}`);
       case 'win':
         confetti();
-        return showModal(mine(ev) ? `🎉 Ти влучив у виграшний клік №${state.secret}!` : `🎉 Переміг ${ev.name} (клік №${state.secret})`);
+        return showModal(mine(ev) ? `🎉 Ти знайшов виграшний клік №${state.secret}!` : `🎉 Переміг ${ev.name}: знайшов виграшний клік №${state.secret}`);
+      case 'finish':
+        confetti();
+        return showModal((mine(ev) ? `🏁 Ти першим дійшов до ${state.rules.finish} кліків!` : `🏁 ${ev.name} першим дійшов до ${state.rules.finish} кліків`) + ' ' + secretVerdict());
       case 'draw':
-        return showModal(`🤝 Нічия: кліки закінчились у всіх. Виграшним був №${state.secret}`);
+        return showModal(`🤝 Нічия: кліки закінчились у всіх, до фінішу ніхто не дійшов. ${secretVerdict()}`);
     }
+  }
+
+  // shown at the end: was there a winning click at all?
+  function secretVerdict() {
+    if (state.secret == null) return 'Виграшного кліку цього разу не було 🤷';
+    return `Виграшний клік був на лічильнику бою №${state.secret} — ніхто не влучив`;
   }
 
   function onCardEvent(ev) {
@@ -155,11 +164,11 @@
 
     document.querySelectorAll('[data-rule]').forEach((n) => { n.textContent = r[n.dataset.rule]; });
 
-    // the hidden window and how close the counter is to its end
+    // where the winning click would hide (if it exists) and how close the counter is to its end
     const [from, to] = state.window;
-    const left = Math.max(0, Math.min(1, (to - state.counter) / r.target_max));
-    el.winFrom.textContent = from;
-    el.winTo.textContent = to;
+    const left = Math.max(0, Math.min(1, (to - state.counter) / (to - from + 1)));
+    el.winFrom.textContent = r.target_at[0];
+    el.winTo.textContent = r.target_at[1];
     el.angerFill.style.width = `${left * 100}%`;
     el.angerFill.style.background = `hsl(${(1 - left) * 120}, 70%, 45%)`;
     el.angerEmoji.textContent = left > 0.75 ? '🤬' : left > 0.5 ? '😠' : left > 0.25 ? '😐' : '🙂';
@@ -175,7 +184,7 @@
     el.wallet.hidden = !p;
     if (p) {
       el.walletBudget.textContent = `🔋 ${p.budget} кліків`;
-      el.walletPhase.textContent = inBattle ? `⚔️ у бою` : `💰 депозит ${p.deposited}/${r.deposit}`;
+      el.walletPhase.textContent = (inBattle ? `⚔️ у бою` : `💰 депозит ${p.deposited}/${r.deposit}`) + ` · 🏁 ${p.progress}/${r.finish}`;
       el.walletShield.hidden = !you.shielded;
     }
 
@@ -234,7 +243,7 @@
     if (!state.players.length) return el.players.replaceChildren(empty('Поки нікого. Будь першим!'));
     el.players.replaceChildren(...state.players.map((p) => {
       const isMe = p.id === you.player_id;
-      const status = p.deposited >= r.deposit ? `⚔️${p.clicks}` : `💰${p.deposited}/${r.deposit}`;
+      const status = `${p.deposited >= r.deposit ? '⚔️' : '💰'} 🏁${p.progress}/${r.finish}`;
       const sleeper = !p.clicked ? ' 💤' : '';  // never clicked: can be robbed, can't be swapped with
       const name = `${p.id === state.starter_id ? '🔥 ' : ''}${p.name}${p.has_card ? ' 🃏' : ''}${sleeper}`;
       const node = row(name, `${status} · 🔋${p.budget}`, [isMe && 'is-me', !p.online && 'is-off', p.bot && 'is-bot']);

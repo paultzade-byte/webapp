@@ -15,8 +15,10 @@ from . import bot, game
 from .models import Game, Player
 
 # Small numbers so tests stay readable: 6 clicks each, 2 of them deposit.
+# The finish line is out of reach unless a test moves it, so old "run out = draw" tests still hold.
 RULES = {
-    "BUDGET": 6, "DEPOSIT": 2, "TARGET_MAX": 3, "IDLE_SECONDS": 5,
+    "BUDGET": 6, "DEPOSIT": 2, "FINISH": 100, "TARGET_AT": (3, 5), "SECRET_CHANCE": (1.0, 1.0),
+    "IDLE_SECONDS": 5,
     "TRAP_CHANCE": 0, "LOCK_SECONDS": 2, "CARD_AT": (3,), "BATTERY": 3, "SABOTAGE": 2,
     "TICK_SECONDS": 0, "STALE_MINUTES": 5, "ONLINE_SECONDS": 30,
     "MIN_CLICK_INTERVAL_MS": 0, "HALL_OF_FAME_SIZE": 5, "BOT_CPS": 4,
@@ -35,8 +37,8 @@ class GameTestCase(TestCase):
     def setUp(self):
         self.t = timezone.now()
 
-    def set_secret(self, value, window_start=0):
-        Game.objects.filter(pk=game.current_game().pk).update(secret=value, window_start=window_start)
+    def set_secret(self, value):
+        Game.objects.filter(pk=game.current_game().pk).update(secret=value)
 
     def player(self, session):
         return Player.objects.get(session_key=session, game=game.current_game())
@@ -69,6 +71,88 @@ class JoinTests(GameTestCase):
         for bad in ("   ", "x" * 33):
             with self.assertRaises(game.GameError):
                 game.join("s", bad)
+
+
+class FinishAndSecretTests(GameTestCase):
+    """The owner's core rule: race to your own FINISH-th click; the winning click is a maybe-bonus."""
+
+    @override_settings(GAME={**RULES, "FINISH": 6})
+    def test_first_to_make_all_their_clicks_wins(self):
+        game.join("a", "A")
+        game.join("b", "B")
+        self.set_secret(None)
+        for _ in range(5):  # take turns so nobody idles
+            self.clicks("a", 1)
+            self.clicks("b", 1)
+        r = self.clicks("a", 1)
+        self.assertEqual(kinds(r), ["click", "finish"])
+        g = game.current_game()
+        self.assertEqual(g.winner.name, "A")
+        self.assertTrue(g.is_finished)
+        with self.assertRaises(game.GameError):
+            self.clicks("b", 1)
+
+    @override_settings(GAME={**RULES, "FINISH": 6})
+    def test_burned_clicks_do_not_bring_you_to_the_finish(self):
+        game.join("a", "A")
+        game.join("b", "B")
+        self.set_secret(None)
+        self.clicks("a", 5)
+        self.clicks("b", 1)
+        game.tick(now=self.t + 10 * SEC)  # a idles: the last click burns
+        a = self.player("a")
+        self.assertEqual((a.budget, a.burned, game.progress(a)), (0, 1, 5))
+        self.assertIsNone(game.current_game().winner)
+
+    @override_settings(GAME={**RULES, "FINISH": 6})
+    def test_battery_lets_you_reach_the_finish_after_sabotage(self):
+        game.join("a", "A")
+        game.join("b", "B")
+        self.set_secret(None)
+        self.clicks("a", 1)
+        self.give_card("b", "sabotage")
+        game.play_card("b", str(self.player("a").public_id), now=self.t)
+        self.assertEqual(self.player("a").budget, 3)  # 1 + 3 left = 4 < 6, can't finish now
+        self.give_card("a", "battery")
+        game.play_card("a", now=self.t)
+        r = self.clicks("a", 5)
+        self.assertEqual(kinds(r)[-1], "finish")
+
+    def test_the_secret_is_found_before_anyone_finishes(self):
+        game.join("a", "A")
+        self.set_secret(3)  # battle click 3 = 5th of your own
+        with override_settings(GAME={**RULES, "FINISH": 6}):
+            r = self.clicks("a", 5)
+        self.assertEqual(kinds(r), ["win"])
+
+    def test_no_secret_at_all_is_possible_and_stays_hidden(self):
+        game.join("a", "A")
+        self.set_secret(None)
+        snap = game.snapshot()
+        self.assertIsNone(snap["secret"])
+        self.assertEqual(snap["window"], [1, 3])
+        with mock.patch.object(game, "draw_card", return_value="shield"):
+            r = self.clicks("a", 6)
+        self.assertNotIn("win", kinds(r))
+        self.assertIn("draw", kinds(r))
+        self.assertIsNone(game.snapshot()["secret"])  # finished and still None = there was none
+
+    def test_roll_secret_rolls_its_own_chance_then_a_spot_in_the_window(self):
+        with override_settings(GAME={**RULES, "SECRET_CHANCE": (0.0, 0.0)}):
+            self.assertIsNone(game.roll_secret())
+        with override_settings(GAME={**RULES, "SECRET_CHANCE": (1.0, 1.0)}):
+            self.assertTrue(all(1 <= game.roll_secret() <= 3 for _ in range(50)))
+        with override_settings(GAME={**RULES, "SECRET_CHANCE": (0.0, 1.0)}), \
+                mock.patch.object(game.rng, "uniform", return_value=0.3) as chance, \
+                mock.patch.object(game.rng, "random", return_value=0.5):
+            self.assertIsNone(game.roll_secret())  # 0.5 >= 0.3: no winning click this game
+            chance.assert_called_once_with(0.0, 1.0)
+
+    def test_default_settings_keep_the_secret_before_the_finish(self):
+        from config.settings import GAME as real
+        self.assertEqual(real["TARGET_AT"], (11, 18))
+        self.assertLess(real["TARGET_AT"][1], real["FINISH"])
+        self.assertGreater(real["TARGET_AT"][0], real["DEPOSIT"])
 
 
 class DepositAndBattleTests(GameTestCase):
@@ -190,12 +274,23 @@ class IdleTests(GameTestCase):
         self.set_secret(1)
         self.clicks("a", 2)
         self.clicks("b", 2)  # b keeps clicking, a idles
-        with mock.patch.object(game, "roll_secret", return_value=4):
+        with mock.patch.object(game.rng, "randint", return_value=3) as roll:
             r = game.tick(now=self.t + 4 * SEC)  # a's last click was 2s before b's last
+        roll.assert_called_once_with(2, 3)  # still inside the window (battle 1..3), after the burn
         self.assertEqual(kinds(r), ["burn_win"])
         g = game.current_game()
-        self.assertEqual((g.counter, g.secret, g.window_start), (1, 4, 1))
+        self.assertEqual((g.counter, g.secret), (1, 3))
         self.assertFalse(g.is_finished)
+
+    def test_burning_the_last_possible_winning_click_removes_it(self):
+        game.join("a", "A")
+        game.join("b", "B")
+        self.set_secret(3)  # the very end of the window (battle 1..3)
+        self.clicks("a", 2)
+        self.clicks("b", 4)  # counter 2, a idles
+        r = game.tick(now=self.t + 4 * SEC)
+        self.assertEqual(kinds(r), ["burn_win"])
+        self.assertIsNone(game.current_game().secret)
 
     def test_penalty_is_charged_lazily_on_the_next_click_too(self):
         game.join("a", "A")
@@ -508,7 +603,7 @@ def make_session():
     return s
 
 
-@override_settings(GAME={**RULES, "TARGET_MAX": 1, "CARD_AT": ()})  # secret is always 1
+@override_settings(GAME={**RULES, "TARGET_AT": (3, 3), "CARD_AT": ()})  # secret is always 1
 class WebsocketTests(TransactionTestCase):
     app = SessionMiddlewareStack(URLRouter(websocket_urlpatterns))
 
@@ -566,4 +661,61 @@ class WebsocketTests(TransactionTestCase):
         comm = await self.open()
         await comm.send_json_to({"type": "__init__"})
         self.assertEqual((await comm.receive_json_from())["type"], "error")
+        await comm.disconnect()
+
+
+@override_settings(INVITES_REQUIRED=True, INVITE_MAX_DEVICES=2)
+class InviteTests(TestCase):
+    def setUp(self):
+        from . import invites
+        self.inv = invites
+        self.code = invites.create(1, hours=1)[0].code
+
+    def test_strangers_get_404_everywhere(self):
+        for url in ("/", "/api/state/", "/admin/", "/AAAAAAAAAAAA/"):
+            self.assertEqual(self.client.get(url).status_code, 404, url)
+
+    def test_the_link_lets_you_in_and_remembers_you(self):
+        r = self.client.get(f"/{self.code}")
+        self.assertRedirects(r, "/", fetch_redirect_response=False)
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.get("/api/state/").status_code, 200)
+
+    def test_one_link_works_on_at_most_two_devices(self):
+        from django.test import Client
+        for _ in range(2):
+            self.assertEqual(Client().get(f"/{self.code}").status_code, 302)
+        third = Client()
+        self.assertEqual(third.get(f"/{self.code}").status_code, 404)
+        self.assertEqual(third.get("/").status_code, 404)
+
+    def test_expired_or_revoked_link_stops_working_even_after_entering(self):
+        self.client.get(f"/{self.code}")
+        Invite = self.inv.Invite
+        Invite.objects.update(expires_at=timezone.now())
+        self.assertEqual(self.client.get("/").status_code, 404)
+        self.assertEqual(self.client.get(f"/{self.code}").status_code, 404)
+
+    def test_codes_are_unique_and_url_safe(self):
+        codes = {i.code for i in self.inv.create(50, hours=1)}
+        self.assertEqual(len(codes), 50)
+        self.assertTrue(all(self.inv.CODE_RE.match(c) for c in codes))
+
+    @override_settings(INVITES_REQUIRED=False)
+    def test_off_by_default_for_local_play(self):
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+
+@override_settings(GAME={**RULES, "CARD_AT": ()}, INVITES_REQUIRED=True)
+class InviteWebsocketTests(TransactionTestCase):
+    app = SessionMiddlewareStack(URLRouter(websocket_urlpatterns))
+
+    async def test_websocket_without_invite_is_closed(self):
+        session = await sync_to_async(make_session)()
+        comm = WebsocketCommunicator(
+            self.app, "/ws/game/", headers=[(b"cookie", f"sessionid={session.session_key}".encode())]
+        )
+        connected, _ = await comm.connect()
+        self.assertTrue(connected)  # accepted, then closed straight away
+        self.assertEqual((await comm.receive_output())["type"], "websocket.close")
         await comm.disconnect()

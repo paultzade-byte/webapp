@@ -8,11 +8,16 @@ Rules v2 in short:
   * the first DEPOSIT of them are a deposit: they don't move the shared
     counter, and each one may hit a random trap (slip / modal / lock);
   * after the deposit your clicks move the shared battle counter;
-  * the server hides one winning counter value in 1..TARGET_MAX;
-    whoever clicks exactly on it wins;
+  * the main way to win: be the first to make FINISH clicks of your own;
+  * a shortcut: the game *may* hide one winning click (each game rolls its
+    own chance from SECRET_CHANCE, and nobody is told whether it exists).
+    It sits on the TARGET_AT-th click — counted the way you count your own
+    clicks, i.e. deposit first, then the battle counter — so it always comes
+    before anyone's FINISH. Whoever clicks exactly on it wins;
   * no click for IDLE_SECONDS -> -1 click. In battle that click *burns*:
-    it moves the counter for you but can't win. Burn the winning one and
-    the secret is re-rolled;
+    it moves the counter for you but can't win and doesn't bring you closer
+    to the finish. Burn the winning one and it is re-hidden further on
+    (still inside TARGET_AT, or gone if there's no room left);
   * at CARD_AT personal clicks you get a random card (max one in hand);
   * on a secret random click in ROB_AT you get the 🦹 rob privilege, but only
     if the game has ROB_MIN_PLAYERS+ players. Robbing takes up to ROB clicks
@@ -63,8 +68,31 @@ def cfg(key: str):
 # ---------------------------------------------------------------- randomness
 # Separate tiny functions so tests can patch exactly one decision.
 
-def roll_secret(start: int) -> int:
-    return start + rng.randint(1, cfg("TARGET_MAX"))
+def target_window() -> tuple[int, int]:
+    """TARGET_AT is in "your own clicks" (11..18 of 20); the secret lives on the
+    battle counter, which starts after the deposit (1..8)."""
+    lo, hi = cfg("TARGET_AT")
+    return lo - cfg("DEPOSIT"), hi - cfg("DEPOSIT")
+
+
+def roll_secret(after: int = 0) -> int | None:
+    """A fresh game: maybe a winning click, maybe none."""
+    chance = rng.uniform(*cfg("SECRET_CHANCE"))  # even the chance is random
+    if rng.random() >= chance:
+        return None
+    return reroll_secret(after)
+
+
+def reroll_secret(after: int) -> int | None:
+    """Somewhere after `after` but still inside the window; None if no room is left."""
+    lo, hi = target_window()
+    lo = max(lo, after + 1)
+    return rng.randint(lo, hi) if lo <= hi else None
+
+
+def progress(player: Player) -> int:
+    """How far along the track you are: your own counted clicks (burns don't count)."""
+    return player.deposited + player.clicks
 
 
 def roll_trap() -> str | None:
@@ -83,7 +111,7 @@ def roll_rob_at() -> int:
 
 def current_game() -> Game:
     game = Game.objects.order_by("-id").first()
-    return game or Game.objects.create(secret=roll_secret(0))
+    return game or Game.objects.create(secret=roll_secret())
 
 
 def _lock_current() -> Game:
@@ -138,17 +166,17 @@ def snapshot(game: Game | None = None) -> dict:
     return {
         "game_id": game.pk,
         "counter": game.counter,
-        "window": [game.window_start + 1, game.window_start + cfg("TARGET_MAX")],
-        "secret": game.secret if game.is_finished else None,
+        "window": list(target_window()),  # where it *would* be; whether it exists is a secret
+        "secret": game.secret if game.is_finished else None,  # still None after the end = there was none
         "finished": game.is_finished,
         "winner": game.winner.name if game.winner else None,
         "starter_id": str(game.starter.public_id) if game.starter else None,
         "with_bot": game.with_bot,
         "rules": {
             k.lower(): cfg(k)
-            for k in ("BUDGET", "DEPOSIT", "TARGET_MAX", "IDLE_SECONDS", "BATTERY", "SABOTAGE",
+            for k in ("BUDGET", "DEPOSIT", "FINISH", "IDLE_SECONDS", "BATTERY", "SABOTAGE",
                       "ROB", "ROB_MIN_PLAYERS")
-        },
+        } | {"target_at": list(cfg("TARGET_AT"))},
         "players": [
             {
                 "id": str(p.public_id),
@@ -156,6 +184,7 @@ def snapshot(game: Game | None = None) -> dict:
                 "budget": p.budget,
                 "deposited": p.deposited,
                 "clicks": p.clicks,
+                "progress": progress(p),
                 "burned": p.burned,
                 "has_card": bool(p.card),
                 "clicked": p.last_action_at is not None,  # swap only works on these
@@ -237,15 +266,14 @@ def _settle_idle(game: Game, now: datetime, res: Result) -> None:
         p.burned += 1
         game.counter += 1
         if game.counter == game.secret:
-            game.window_start = game.counter
-            game.secret = roll_secret(game.counter)
+            game.secret = reroll_secret(game.counter)
             res.events.append({"kind": "burn_win", "name": p.name, "player_id": pid})
         else:
             res.events.append({"kind": "burn", "name": p.name, "player_id": pid})
 
     touched = {p.pk: p for _, p in ticks}.values()
     Player.objects.bulk_update(touched, ["last_action_at", "budget", "shielded", "burned"])
-    game.save(update_fields=["counter", "secret", "window_start"])
+    game.save(update_fields=["counter", "secret"])
 
 
 def _check_draw(game: Game, now: datetime, res: Result) -> None:
@@ -380,7 +408,12 @@ def click(session_key: str, now: datetime | None = None) -> Result:
                 res.events.append({"kind": "win", "name": player.name, "player_id": pid})
             else:
                 res.events.append({"kind": "click", "name": player.name, "player_id": pid})
-            _milestones(game, player, res)
+                _milestones(game, player, res)
+
+        if not game.is_finished and progress(player) >= cfg("FINISH"):
+            game.winner = player
+            game.finished_at = now
+            res.events.append({"kind": "finish", "name": player.name, "player_id": pid})
 
         player.save()
         game.save()
@@ -552,7 +585,7 @@ def new_game(session_key: str | None) -> Game:
         if not game.is_finished:
             game.finished_at = timezone.now()
             game.save(update_fields=["finished_at"])
-        fresh = Game.objects.create(secret=roll_secret(0), with_bot=game.with_bot)
+        fresh = Game.objects.create(secret=roll_secret(), with_bot=game.with_bot)
         if fresh.with_bot:
             _spawn_bot(fresh)
         return fresh

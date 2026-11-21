@@ -7,8 +7,9 @@ class Game(models.Model):
     """One round. The newest row is always the current game."""
 
     counter = models.PositiveIntegerField(default=0)  # battle clicks only (deposits don't count)
-    secret = models.PositiveIntegerField(default=1)  # the winning counter value. NEVER send it to clients!
-    window_start = models.PositiveIntegerField(default=0)  # secret is in window_start+1 .. window_start+TARGET_MAX
+    # The winning counter value, or None if this game has no winning click at all.
+    # NEVER send it (or even whether it exists) to clients before the game ends!
+    secret = models.PositiveIntegerField(null=True, blank=True, default=None)
     with_bot = models.BooleanField(default=False)  # the "гра з ботом" toggle; new games inherit it
     starter = models.ForeignKey(
         "Player", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
@@ -28,7 +29,7 @@ class Game(models.Model):
         return self.finished_at is not None
 
     def __str__(self):
-        return f"Game #{self.pk}: {self.counter} (secret {self.secret})"
+        return f"Game #{self.pk}: {self.counter} (secret {self.secret or '—'})"
 
 
 class Player(models.Model):
@@ -68,3 +69,23 @@ class Player(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class Invite(models.Model):
+    """A personal link to the game: <server>/<code>. Only used when INVITES_REQUIRED is on.
+
+    The first devices that open it (up to INVITE_MAX_DEVICES) get it bound to their session;
+    anyone else with the same link is turned away. It stops working at expires_at."""
+
+    code = models.CharField(max_length=32, unique=True)
+    note = models.CharField(max_length=64, blank=True)  # who you sent it to, just for you
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    sessions = models.JSONField(default=list, blank=True)  # bound session keys. NEVER expose
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-id"]
+
+    def __str__(self):
+        return f"{self.code} ({self.note or 'без нотатки'})"

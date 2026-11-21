@@ -29,6 +29,11 @@ SECRET_KEY = os.environ.get(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', '1') == '1'
 
+# Invite-only mode: nobody gets in without a personal link (python manage.py invites).
+# Turn on whenever the server is reachable from outside: DJANGO_INVITES=1.
+INVITES_REQUIRED = os.environ.get('DJANGO_INVITES', '0') == '1'
+INVITE_MAX_DEVICES = 2  # e.g. Telegram's in-app browser + the real browser
+
 ALLOWED_HOSTS = os.environ.get(
     'DJANGO_ALLOWED_HOSTS', '192.168.1.77,127.0.0.1,localhost'
 ).split(',')
@@ -51,6 +56,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'tasks.invites.InviteGateMiddleware',  # strangers get 404 when INVITES_REQUIRED
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -119,7 +125,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Europe/Kyiv'
 
 USE_I18N = True
 
@@ -155,7 +161,11 @@ ASGI_APPLICATION = 'config.asgi.application'
 GAME = {
     'BUDGET': 20,             # clicks each player gets per game
     'DEPOSIT': 10,            # the first N of them are the deposit (can't win)
-    'TARGET_MAX': int(os.environ.get('GAME_TARGET_MAX', 15)),  # winning click hides in battle clicks 1..N
+    'FINISH': 20,             # make this many of your own clicks first -> you win (idle burns don't count)
+    'TARGET_AT': (11, 18),    # the hidden winning click, if there is one, is the 11th..18th click
+                              # (counted like your own clicks: deposit 1..10, then the shared battle
+                              # counter 1..8). Keep TARGET_AT[1] < FINISH so it always comes first.
+    'SECRET_CHANCE': (0.0, 1.0),  # each game rolls its own chance in this range that a winning click exists
     'IDLE_SECONDS': 5,        # no click this long -> -1 click (burned if you're in battle)
     'TRAP_CHANCE': 0.25,      # chance of a trap on every deposit click
     'LOCK_SECONDS': 2,        # how long the "lock" trap disables the button
@@ -170,6 +180,6 @@ GAME = {
     'ONLINE_SECONDS': 30,     # no ping this long -> player counts as offline
     'MIN_CLICK_INTERVAL_MS': 50,  # per-player anti-autoclicker throttle
     'HALL_OF_FAME_SIZE': 5,
-    'BOT_CPS': 3,             # bot clicks per second (people manage ~5-8)
+    'BOT_CPS': 1.5,           # bot clicks per second (people manage ~5-8); 3 was way too fast for the finish race
     'BOT_THINK_SECONDS': (2, 5),  # the bot "notices" a card or the privilege after this long
 }

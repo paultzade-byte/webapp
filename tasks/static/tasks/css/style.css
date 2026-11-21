@@ -31,6 +31,16 @@ body {
 @media (max-width: 760px) {
     .layout { grid-template-columns: minmax(0, 420px); }
 }
+@media (max-width: 480px) {
+    .layout { padding: 12px 8px; gap: 12px; }
+    .card { padding: 14px; }
+    h1 { font-size: 1.6em; }
+    .big-btn { width: 100%; max-width: 320px; padding: 18px 20px; font-size: 22px; }  /* a fat thumb target */
+}
+
+/* Phones: fast taps on the button must not zoom, select text or flash blue. */
+button, .switch, .players li { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.big-btn { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 
 .card {
     background: var(--card);

@@ -25,7 +25,7 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.layers import get_channel_layer
 from django.conf import settings
 
-from . import bot, game
+from . import bot, game, invites
 
 GROUP = "game"
 log = logging.getLogger(__name__)
@@ -100,6 +100,9 @@ class GameConsumer(AsyncJsonWebsocketConsumer):
         if not self.session.session_key:
             await self.error("Немає сесії — онови сторінку")
             await self.close()
+            return
+        if not await database_sync_to_async(invites.is_allowed)(self.session):
+            await self.close(code=4403)  # no valid invite: same as the 404 on the page
             return
         _connections += 1
         self.counted = True
