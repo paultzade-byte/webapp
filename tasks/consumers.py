@@ -5,6 +5,7 @@ client -> server
     {"type": "join", "name": "Petro"}
     {"type": "click"}
     {"type": "play_card", "target": "<player id>"}   # target only for sabotage / swap
+    {"type": "rob", "target": "<player id>"}         # needs the 🦹 privilege
     {"type": "new_game"}
     {"type": "set_bot", "enabled": true}
     {"type": "ping"}
@@ -140,6 +141,9 @@ class GameConsumer(AsyncJsonWebsocketConsumer):
     async def on_play_card(self, content):
         target = content.get("target")
         await self.deliver(await database_sync_to_async(game.play_card)(self.key, target))
+
+    async def on_rob(self, content):
+        await self.deliver(await database_sync_to_async(game.rob)(self.key, content.get("target")))
 
     async def on_set_bot(self, content):
         enabled = content.get("enabled") is True

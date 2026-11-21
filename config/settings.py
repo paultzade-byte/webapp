@@ -162,10 +162,14 @@ GAME = {
     'CARD_AT': (5, 15),       # personal click counts that earn a card
     'BATTERY': 3,             # battery card: +N clicks
     'SABOTAGE': 2,            # sabotage card: -N clicks to the target
+    'ROB': 5,                 # 🦹 privilege: steal up to N clicks (the victim always keeps 1)
+    'ROB_AT': (3, 15),        # the privilege drops on a secret random click in this range...
+    'ROB_MIN_PLAYERS': 3,     # ...but only when there are at least this many players
     'TICK_SECONDS': 1,        # how often the server checks for idle players (0 = never)
     'STALE_MINUTES': 5,       # nobody clicked this long -> anyone may restart
     'ONLINE_SECONDS': 30,     # no ping this long -> player counts as offline
     'MIN_CLICK_INTERVAL_MS': 50,  # per-player anti-autoclicker throttle
     'HALL_OF_FAME_SIZE': 5,
-    'BOT_CPS': 4,             # bot clicks per second (people manage ~6-8)
+    'BOT_CPS': 3,             # bot clicks per second (people manage ~5-8)
+    'BOT_THINK_SECONDS': (2, 5),  # the bot "notices" a card or the privilege after this long
 }

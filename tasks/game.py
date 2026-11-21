@@ -13,7 +13,10 @@ Rules v2 in short:
   * no click for IDLE_SECONDS -> -1 click. In battle that click *burns*:
     it moves the counter for you but can't win. Burn the winning one and
     the secret is re-rolled;
-  * at CARD_AT personal clicks you get a random card (max one in hand).
+  * at CARD_AT personal clicks you get a random card (max one in hand);
+  * on a secret random click in ROB_AT you get the 🦹 rob privilege, but only
+    if the game has ROB_MIN_PLAYERS+ players. Robbing takes up to ROB clicks
+    from anyone (even a sleeper), never all of them.
 
 Every action returns a Result: public events for everyone, private notices
 for the actor, and the ids of players whose private state changed.
@@ -70,6 +73,10 @@ def roll_trap() -> str | None:
 
 def draw_card() -> str:
     return rng.choice(CARDS)
+
+
+def roll_rob_at() -> int:
+    return rng.randint(*cfg("ROB_AT"))
 
 
 # ---------------------------------------------------------------- queries
@@ -139,7 +146,8 @@ def snapshot(game: Game | None = None) -> dict:
         "with_bot": game.with_bot,
         "rules": {
             k.lower(): cfg(k)
-            for k in ("BUDGET", "DEPOSIT", "TARGET_MAX", "IDLE_SECONDS", "BATTERY", "SABOTAGE")
+            for k in ("BUDGET", "DEPOSIT", "TARGET_MAX", "IDLE_SECONDS", "BATTERY", "SABOTAGE",
+                      "ROB", "ROB_MIN_PLAYERS")
         },
         "players": [
             {
@@ -150,6 +158,7 @@ def snapshot(game: Game | None = None) -> dict:
                 "clicks": p.clicks,
                 "burned": p.burned,
                 "has_card": bool(p.card),
+                "clicked": p.last_action_at is not None,  # swap only works on these
                 "bot": p.is_bot,
                 "online": p.is_bot or is_online(p),
             }
@@ -171,12 +180,13 @@ def private_state(session_key: str | None, fallback_name: str = "") -> dict:
     now = timezone.now()
     p = find_player(session_key)
     if p is None:
-        return {"player_id": None, "name": fallback_name, "card": "",
+        return {"player_id": None, "name": fallback_name, "card": "", "can_rob": False,
                 "shielded": False, "locked_ms": 0, "idle_ms": None}
     return {
         "player_id": str(p.public_id),
         "name": p.name,
         "card": p.card,
+        "can_rob": p.can_rob,
         "shielded": p.shielded,
         "locked_ms": _ms(p.disabled_until - now) if p.disabled_until else 0,
         "idle_ms": _ms(now - p.last_action_at) if p.last_action_at else None,
@@ -292,7 +302,7 @@ def join(session_key: str, raw_name: str) -> Player:
         try:
             player = Player.objects.create(
                 game=game, session_key=session_key, name=name, name_key=name.lower(),
-                budget=cfg("BUDGET"),
+                budget=cfg("BUDGET"), rob_at=roll_rob_at(),
             )
         except IntegrityError:
             raise GameError("Таке ім'я вже зайняте, придумай інше...")
@@ -311,14 +321,21 @@ def _get_acting_player(game: Game, session_key: str) -> Player:
     return player
 
 
-def _maybe_award_card(player: Player, res: Result) -> None:
-    if player.deposited + player.clicks not in cfg("CARD_AT"):
-        return
-    if player.card:
-        res.notices.append({"kind": "card_lost"})
-        return
-    player.card = draw_card()
-    res.notices.append({"kind": "card", "card": player.card})
+def _milestones(game: Game, player: Player, res: Result) -> None:
+    """Goodies for reaching a personal click count."""
+    progress = player.deposited + player.clicks
+    if progress in cfg("CARD_AT"):
+        if player.card:
+            res.notices.append({"kind": "card_lost"})
+        else:
+            player.card = draw_card()
+            res.notices.append({"kind": "card", "card": player.card})
+    if progress == player.rob_at and not player.can_rob:
+        if game.players.count() >= cfg("ROB_MIN_PLAYERS"):
+            player.can_rob = True
+            res.notices.append({"kind": "privilege"})
+        else:  # a teaser: now you know it exists
+            res.notices.append({"kind": "privilege_missed", "need": cfg("ROB_MIN_PLAYERS")})
 
 
 def click(session_key: str, now: datetime | None = None) -> Result:
@@ -352,7 +369,7 @@ def click(session_key: str, now: datetime | None = None) -> Result:
                     player.disabled_until = now + timedelta(seconds=cfg("LOCK_SECONDS"))
                 kind = "armed" if in_battle(player) else "deposit"
                 res.events.append({"kind": kind, "name": player.name, "player_id": pid})
-                _maybe_award_card(player, res)
+                _milestones(game, player, res)
         else:
             player.budget -= 1
             player.clicks += 1
@@ -363,7 +380,7 @@ def click(session_key: str, now: datetime | None = None) -> Result:
                 res.events.append({"kind": "win", "name": player.name, "player_id": pid})
             else:
                 res.events.append({"kind": "click", "name": player.name, "player_id": pid})
-            _maybe_award_card(player, res)
+            _milestones(game, player, res)
 
         player.save()
         game.save()
@@ -398,6 +415,8 @@ def play_card(session_key: str, target_id: str | None = None, now: datetime | No
                 raise GameError("Вибери ціль — клікни по гравцю в списку")
             if target.pk == player.pk:
                 raise GameError("Себе саботувати — це вже до психолога 🙃")
+            if card == Player.Card.SWAP and target.last_action_at is None:
+                raise GameError(f"{target.name} ще жодного разу не клікав — з ним мінятись не можна")
             tid = str(target.public_id)
             event.update(target=target.name, target_id=tid)
             res.affected.add(tid)
@@ -429,6 +448,48 @@ def play_card(session_key: str, target_id: str | None = None, now: datetime | No
     return res
 
 
+def rob(session_key: str, target_id: str | None, now: datetime | None = None) -> Result:
+    """🦹 Take up to ROB clicks from anyone, even from someone who never clicked.
+    The victim always keeps at least one click: no robbing to the bone."""
+    now = now or timezone.now()
+    res = Result()
+    with transaction.atomic():
+        game = _lock_current()
+        _settle_idle(game, now, res)
+        player = _get_acting_player(game, session_key)
+        if not player.can_rob:
+            raise GameError("У тебе немає привілею на грабунок 🦹")
+        if game.players.count() < cfg("ROB_MIN_PLAYERS"):
+            raise GameError(f"Грабувати можна, коли в грі {cfg('ROB_MIN_PLAYERS')}+ гравців")
+        target = _find_target(game, target_id)
+        if target is None:
+            raise GameError("Вибери, кого грабуємо — клікни по гравцю в списку")
+        if target.pk == player.pk:
+            raise GameError("Пограбувати себе? Сміливо, але ні 🙃")
+        loot = min(cfg("ROB"), target.budget - 1)
+        if loot <= 0:
+            raise GameError(f"У {target.name} і так останній клік — нічого брати")
+
+        pid, tid = str(player.public_id), str(target.public_id)
+        res.affected |= {pid, tid}
+        event = {"kind": "rob", "name": player.name, "player_id": pid,
+                 "target": target.name, "target_id": tid}
+        if target.shielded:
+            target.shielded = False
+            res.events.append({**event, "kind": "shield", "against": "rob"})
+        else:
+            old = player.budget
+            target.budget -= loot
+            player.budget += loot
+            _revive(player, old, now)
+            res.events.append({**event, "amount": loot})
+        player.can_rob = False
+        player.save()
+        target.save()
+        _check_draw(game, now, res)
+    return res
+
+
 def _find_target(game: Game, target_id: str | None) -> Player | None:
     try:
         public_id = uuid.UUID(str(target_id))
@@ -447,7 +508,7 @@ def _spawn_bot(game: Game) -> Player:
         name = f"{BOT_NAME} {n}"  # somebody already called themselves "🤖 Бот", cute
     return Player.objects.create(
         game=game, session_key=BOT_SESSION, name=name, name_key=name.lower(),
-        budget=cfg("BUDGET"), is_bot=True,
+        budget=cfg("BUDGET"), is_bot=True, rob_at=roll_rob_at(),
     )
 
 

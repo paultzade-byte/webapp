@@ -20,6 +20,8 @@ RULES = {
     "TRAP_CHANCE": 0, "LOCK_SECONDS": 2, "CARD_AT": (3,), "BATTERY": 3, "SABOTAGE": 2,
     "TICK_SECONDS": 0, "STALE_MINUTES": 5, "ONLINE_SECONDS": 30,
     "MIN_CLICK_INTERVAL_MS": 0, "HALL_OF_FAME_SIZE": 5, "BOT_CPS": 4,
+    "ROB": 5, "ROB_AT": (100, 100), "ROB_MIN_PLAYERS": 3,  # privilege off unless a test sets rob_at
+    "BOT_THINK_SECONDS": (0, 0),
 }
 SEC = timedelta(seconds=1)
 
@@ -244,9 +246,18 @@ class CardTests(GameTestCase):
 
     def test_swap(self):
         self.clicks("a", 4)
+        self.clicks("b", 1)
         self.give_card("a", "swap")
         game.play_card("a", str(self.player("b").public_id))
-        self.assertEqual((self.player("a").budget, self.player("b").budget), (6, 2))
+        self.assertEqual((self.player("a").budget, self.player("b").budget), (5, 2))
+
+    def test_cannot_swap_with_someone_who_never_clicked(self):
+        self.clicks("a", 4)
+        self.give_card("a", "swap")
+        with self.assertRaises(game.GameError):
+            game.play_card("a", str(self.player("b").public_id))
+        self.assertEqual(self.player("a").card, "swap")  # the card is not wasted
+        self.assertFalse(game.snapshot()["players"][1]["clicked"])
 
     def test_shield_is_secret_and_blocks_sabotage(self):
         self.give_card("b", "shield")
@@ -266,6 +277,78 @@ class CardTests(GameTestCase):
         game.play_card("a", now=self.t)
         game.tick(now=self.t + 2 * SEC)
         self.assertEqual(self.player("a").budget, 3)
+
+
+class RobTests(GameTestCase):
+    def setUp(self):
+        super().setUp()
+        for key in "abc":
+            game.join(key, key.upper())
+        self.set_secret(100)
+
+    def give_privilege(self, session):
+        Player.objects.filter(session_key=session).update(can_rob=True)
+
+    def rob(self, robber, victim):
+        return game.rob(robber, str(self.player(victim).public_id), now=self.t)
+
+    def test_privilege_drops_on_the_secret_click_and_stays_secret(self):
+        Player.objects.filter(session_key="a").update(rob_at=2)
+        self.assertEqual(self.clicks("a", 1).notices, [])
+        self.assertEqual(self.clicks("a", 1).notices, [{"kind": "privilege"}])
+        self.assertTrue(self.player("a").can_rob)
+        self.assertNotIn("rob", repr(game.snapshot()["players"]))
+        self.assertTrue(game.private_state("a")["can_rob"])
+
+    def test_no_privilege_with_two_players(self):
+        Player.objects.filter(session_key="c").delete()
+        Player.objects.filter(session_key="a").update(rob_at=1)
+        r = self.clicks("a", 1)
+        self.assertEqual(r.notices, [{"kind": "privilege_missed", "need": 3}])
+        self.assertFalse(self.player("a").can_rob)
+
+    def test_rob_a_sleeper_for_five(self):
+        self.give_privilege("a")
+        r = self.rob("a", "c")  # c never clicked: still fair game for robbers
+        self.assertEqual(r.events[0]["amount"], 5)
+        self.assertEqual((self.player("a").budget, self.player("c").budget), (11, 1))
+        self.assertFalse(self.player("a").can_rob)
+        with self.assertRaises(game.GameError):
+            self.rob("a", "b")  # once per privilege
+
+    def test_never_rob_to_the_bone(self):
+        self.give_privilege("a")
+        Player.objects.filter(session_key="c").update(budget=3)
+        self.assertEqual(self.rob("a", "c").events[0]["amount"], 2)
+        self.give_privilege("a")
+        with self.assertRaises(game.GameError):
+            self.rob("a", "c")  # 1 click left — off limits
+        self.assertEqual(self.player("c").budget, 1)
+
+    def test_rob_needs_privilege_a_target_and_not_yourself(self):
+        with self.assertRaises(game.GameError):
+            self.rob("a", "b")
+        self.give_privilege("a")
+        with self.assertRaises(game.GameError):
+            game.rob("a", None)
+        with self.assertRaises(game.GameError):
+            self.rob("a", "a")
+        self.assertTrue(self.player("a").can_rob)
+
+    def test_shield_stops_a_robbery(self):
+        self.give_privilege("a")
+        Player.objects.filter(session_key="c").update(shielded=True)
+        r = self.rob("a", "c")
+        self.assertEqual((r.events[0]["kind"], r.events[0]["against"]), ("shield", "rob"))
+        self.assertEqual((self.player("a").budget, self.player("c").budget), (6, 6))
+        self.assertFalse(self.player("a").can_rob)
+
+    def test_privilege_sleeps_when_players_drop_below_three(self):
+        self.give_privilege("a")
+        Player.objects.filter(session_key="c").delete()
+        with self.assertRaises(game.GameError):
+            self.rob("a", "b")
+        self.assertTrue(self.player("a").can_rob)
 
 
 class RestartTests(GameTestCase):
@@ -380,6 +463,22 @@ class BotStrategyTests(GameTestCase):
         self.bot_steps(1)
         self.assertTrue(self.bot_player().shielded)
 
+    def test_bot_thinks_before_playing_a_card(self):
+        self.clicks("a", 1)
+        self.give_card(game.BOT_SESSION, "battery")
+        with override_settings(GAME={**RULES, "CARD_AT": (), "BOT_THINK_SECONDS": (2, 2)}):
+            first = self.bot_steps(1)[0]
+            later = self.bot_steps(1, step=timedelta(milliseconds=2100))[0]
+        self.assertEqual(kinds(first), ["deposit"])  # just got it, still thinking
+        self.assertEqual(later.events[0]["card"], "battery")
+
+    def test_bot_robs_the_richest_even_a_sleeper(self):
+        game.join("c", "C")  # never clicks, keeps all 6
+        self.clicks("a", 1)
+        Player.objects.filter(session_key=game.BOT_SESSION).update(can_rob=True)
+        r = self.bot_steps(1)[0]
+        self.assertEqual((r.events[0]["kind"], r.events[0]["target"], r.events[0]["amount"]), ("rob", "C", 5))
+
     def test_bot_sabotages_the_biggest_threat(self):
         game.join("b", "B")
         self.clicks("a", 3)  # A: in battle, 3 clicks left
@@ -389,6 +488,7 @@ class BotStrategyTests(GameTestCase):
         self.assertEqual(r.events[0]["target"], "B")
 
     def test_bot_swaps_only_when_it_pays_off(self):
+        game.join("c", "C")  # a sleeper with 6 clicks: richer, but swap can't touch him
         self.clicks("a", 1)  # A has 5 clicks, the bot 6
         self.give_card(game.BOT_SESSION, "swap")
         for _ in range(5):

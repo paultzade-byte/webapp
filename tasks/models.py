@@ -52,6 +52,8 @@ class Player(models.Model):
     card = models.CharField(max_length=16, choices=Card.choices, blank=True)
     shielded = models.BooleanField(default=False)
     disabled_until = models.DateTimeField(null=True, blank=True)  # "lock" trap
+    rob_at = models.PositiveSmallIntegerField(null=True, blank=True)  # secret click that drops the 🦹 privilege
+    can_rob = models.BooleanField(default=False)  # holds the 🦹 privilege right now
 
     last_action_at = models.DateTimeField(null=True, blank=True)  # idle timer; None = never clicked
     last_click_at = models.DateTimeField(null=True, blank=True)  # throttle

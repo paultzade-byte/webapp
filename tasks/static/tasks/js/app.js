@@ -10,6 +10,7 @@
     winFrom: $('win-from'), winTo: $('win-to'), angerEmoji: $('anger-emoji'), angerFill: $('anger-fill'),
     clicker: $('clicker'), count: $('count'), combo: $('combo'),
     hand: $('hand'), handIcon: $('hand-icon'), handName: $('hand-name'), handDesc: $('hand-desc'), playCard: $('play-card'),
+    perk: $('perk'), perkDesc: $('perk-desc'), playRob: $('play-rob'),
     newGame: $('new-game'), botToggle: $('bot-toggle'), botSwitch: $('bot-switch'), players: $('players'), online: $('online'), targetHint: $('target-hint'),
     hall: $('hall'), toasts: $('toasts'), safeZone: $('safe-zone'),
     modal: $('modal'), modalText: $('modal-text'), modalOk: $('modal-ok'),
@@ -19,7 +20,7 @@
   const CARDS = {
     battery: { icon: '🔋', name: 'Батарейка', desc: (r) => `+${r.battery} кліки до запасу` },
     sabotage: { icon: '🗡', name: 'Саботаж', desc: (r) => `Гравець втрачає ${r.sabotage} кліки`, targeted: true },
-    swap: { icon: '🔄', name: 'Обмін', desc: () => 'Поміняйся запасом кліків з гравцем', targeted: true },
+    swap: { icon: '🔄', name: 'Обмін', desc: () => 'Поміняйся запасом кліків з гравцем, який уже клікав', targeted: true },
     shield: { icon: '🛡', name: 'Щит', desc: () => 'Блокує наступний саботаж, обмін або штраф. Ніхто не знає, що він у тебе є' },
   };
   const BOT_TRAPS = {
@@ -27,14 +28,15 @@
     modal: '🤖 Бот побачив «щось пішло не так» і завис',
     lock: '🤖 Боту заклинило кнопку',
   };
-  const cardLabel = (kind) => `${CARDS[kind].icon} ${CARDS[kind].name}`;
+  const LABELS = { ...CARDS, rob: { icon: '🦹', name: 'Грабунок' } };
+  const cardLabel = (kind) => `${LABELS[kind].icon} ${LABELS[kind].name}`;
 
   // ------------------------------------------------------------- state
   let state = null;          // last public snapshot
   let you = { player_id: null, card: '', shielded: false };
   let ws = null;
   let gameId = null;
-  let targeting = false;     // picking a target for sabotage / swap
+  let targeting = null;      // null | 'card' (sabotage / swap) | 'rob' — picking a victim
   let lockedUntil = 0;       // "lock" trap, performance.now() ms
   let lastAction = null;     // my last click, performance.now() ms (idle timer)
   let displaced = false;     // the button is not where it lives
@@ -100,6 +102,10 @@
         if (targetsMe(ev)) return toast(`🛡 Твій щит відбив ${cardLabel(ev.against)} від ${ev.name}!`, 'good');
         return toast(`🛡 ${ev.target} відбив ${cardLabel(ev.against)} від ${ev.name}`);
       case 'card': return onCardEvent(ev);
+      case 'rob':
+        if (targetsMe(ev)) { shake(); return toast(`🦹 ${ev.name} пограбував тебе на ${ev.amount} кліків!`, 'bad'); }
+        if (mine(ev)) return toast(`🦹 +${ev.amount} кліків з кишені ${ev.target}`, 'good');
+        return toast(`🦹 ${ev.name} пограбував ${ev.target} на ${ev.amount}`);
       case 'win':
         confetti();
         return showModal(mine(ev) ? `🎉 Ти влучив у виграшний клік №${state.secret}!` : `🎉 Переміг ${ev.name} (клік №${state.secret})`);
@@ -132,6 +138,8 @@
       case 'card': return toast(`🃏 Нова карта: ${cardLabel(n.card)}`, 'good');
       case 'card_lost': return toast('🃏 Рука повна — нова карта згоріла');
       case 'shield_up': return toast('🛡 Щит піднято. Ніхто про це не знає 🤫', 'good');
+      case 'privilege': shake(); return toast('🦹 Випав привілей: Грабунок! Обирай жертву', 'good');
+      case 'privilege_missed': return toast(`🦹 Тут міг випасти привілей, але гравців замало (треба ${n.need}+)`);
     }
   }
 
@@ -187,10 +195,25 @@
       el.handIcon.textContent = card.icon;
       el.handName.textContent = card.name;
       el.handDesc.textContent = card.desc(r);
-      el.playCard.textContent = targeting ? 'Скасувати' : 'Зіграти';
+      el.playCard.textContent = targeting === 'card' ? 'Скасувати' : 'Зіграти';
     }
-    if (!card) targeting = false;
+    if (!card && targeting === 'card') targeting = null;
+
+    // the 🦹 privilege
+    const canRob = p && running && you.can_rob;
+    const enough = state.players.length >= r.rob_min_players;
+    el.perk.hidden = !canRob;
+    if (canRob) {
+      el.perkDesc.textContent = enough
+        ? `Забери до ${r.rob} кліків у будь-кого, навіть у сплюха. Жертві лишається хоча б 1`
+        : `Спить, поки гравців менше ${r.rob_min_players}`;
+      el.playRob.disabled = !enough;
+      el.playRob.textContent = targeting === 'rob' ? 'Скасувати' : 'Пограбувати';
+    }
+    if ((!canRob || !enough) && targeting === 'rob') targeting = null;
+
     el.targetHint.hidden = !targeting;
+    el.targetHint.textContent = targeting === 'rob' ? '🦹 Кого грабуємо? (Esc — скасувати)' : '👆 Обери ціль (Esc — скасувати)';
 
     // bot toggle: always shows the server's truth, never the click that's still in flight
     el.botToggle.checked = state.with_bot;
@@ -212,13 +235,18 @@
     el.players.replaceChildren(...state.players.map((p) => {
       const isMe = p.id === you.player_id;
       const status = p.deposited >= r.deposit ? `⚔️${p.clicks}` : `💰${p.deposited}/${r.deposit}`;
-      const name = `${p.id === state.starter_id ? '🔥 ' : ''}${p.name}${p.has_card ? ' 🃏' : ''}`;
+      const sleeper = !p.clicked ? ' 💤' : '';  // never clicked: can be robbed, can't be swapped with
+      const name = `${p.id === state.starter_id ? '🔥 ' : ''}${p.name}${p.has_card ? ' 🃏' : ''}${sleeper}`;
       const node = row(name, `${status} · 🔋${p.budget}`, [isMe && 'is-me', !p.online && 'is-off', p.bot && 'is-bot']);
-      if (targeting && !isMe) {
-        node.classList.add('targetable');
+      const valid = targeting === 'rob' ? p.budget > 1
+        : targeting === 'card' && you.card === 'swap' ? p.clicked
+        : !!targeting;
+      if (targeting && !isMe) node.classList.add(valid ? 'targetable' : 'untargetable');
+      if (targeting && !isMe && valid) {
+        const mode = targeting;
         node.addEventListener('click', () => {
-          send({ type: 'play_card', target: p.id });
-          targeting = false;
+          send(mode === 'rob' ? { type: 'rob', target: p.id } : { type: 'play_card', target: p.id });
+          targeting = null;
           render();
         });
       }
@@ -252,10 +280,15 @@
   el.playCard.addEventListener('click', () => {
     if (!you.card) return;
     if (CARDS[you.card].targeted) {
-      targeting = !targeting;
+      targeting = targeting === 'card' ? null : 'card';
       return render();
     }
     send({ type: 'play_card' });
+  });
+
+  el.playRob.addEventListener('click', () => {
+    targeting = targeting === 'rob' ? null : 'rob';
+    render();
   });
 
   let comboCount = 0, comboTimer = null;
@@ -283,7 +316,7 @@
 
   function newRound() {
     hoverEscaped = false;
-    targeting = false;
+    targeting = null;
     lockedUntil = 0;
     lastAction = null;
     goHome();
@@ -383,7 +416,7 @@
   document.addEventListener('keydown', (e) => {
     if (!el.crash.hidden) { e.preventDefault(); el.crash.hidden = true; return; }
     if (!el.modal.hidden && (e.key === 'Enter' || e.key === 'Escape')) { e.preventDefault(); hideModal(); return; }
-    if (targeting && e.key === 'Escape') { targeting = false; render(); }
+    if (targeting && e.key === 'Escape') { targeting = null; render(); }
   });
 
   // Hand-rolled confetti, no libraries.
